@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Usage cockpit</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to dashboard</a>
+
+    <header class="topbar">
+      <div class="topbar-left">
+        <a class="brand" href="#limits" aria-label="Usage cockpit, back to top">
+          <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
+            <rect width="28" height="28" rx="8" fill="currentColor" />
+            <path d="M7 18.5a7 7 0 0 1 14 0" fill="none" stroke="var(--page)" stroke-opacity=".35" stroke-width="2.6" stroke-linecap="round" />
+            <path d="M7 18.5a7 7 0 0 1 10.6-6" fill="none" stroke="var(--page)" stroke-width="2.6" stroke-linecap="round" />
+            <circle cx="14" cy="18.5" r="1.7" fill="var(--page)" />
+          </svg>
+          <span>
+            <span class="brand-name">Usage cockpit</span>
+            <span class="brand-date" id="date-line">Local usage telemetry</span>
+          </span>
+        </a>
+        <nav class="section-nav" aria-label="Sections">
+          <a href="#limits" data-nav="limits">Limits</a>
+          <a href="#usage" data-nav="usage">Usage</a>
+          <a href="#models" data-nav="models">Models</a>
+          <a href="#habits" data-nav="habits">Habits</a>
+        </nav>
+      </div>
+
+      <div class="topbar-controls">
+        <label class="control">
+          <span class="control-label">Period</span>
+          <span class="segmented" role="group" aria-label="Time period">
+            <button type="button" data-range="1d">24h</button>
+            <button type="button" data-range="7d">7d</button>
+            <button type="button" data-range="30d">30d</button>
+            <button type="button" data-range="all">All</button>
+          </span>
+        </label>
+        <label class="control">
+          <span class="control-label">Measure</span>
+          <span class="segmented" role="group" aria-label="Measure">
+            <button type="button" data-metric="tokens" title="Every token, including cheap cache reads">All tokens</button>
+            <button type="button" data-metric="fresh" title="Input, output and cache writes: the work that actually drains limits">Fresh</button>
+            <button type="button" data-metric="cost" title="What this would cost at API list prices">API $</button>
+          </span>
+        </label>
+        <div class="freshness" id="freshness" aria-live="polite">
+          <span class="pulse" aria-hidden="true"></span>
+          <span id="freshness-copy">Connecting</span>
+        </div>
+        <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh data" title="Refresh data (R)">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.76-4.24M16 4v3.5h-3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
+        <button class="icon-button" id="theme-button" type="button" aria-label="Theme: follows system" title="Theme: follows system">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" /><path d="M10 3.8a6.2 6.2 0 0 1 0 12.4z" fill="currentColor" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ============ LIMITS ============ -->
+      <section class="section" id="limits" aria-labelledby="limits-title">
+        <div class="section-head">
+          <h1 id="limits-title">Limits right now</h1>
+          <p>Each card leads with the window closest to its cap. These ignore the period picker: limits are always live.</p>
+        </div>
+        <div class="cockpit">
+          <div class="quota-grid" id="quota-grid">
+            <article class="quota-card is-loading" aria-label="Loading Claude limits"></article>
+            <article class="quota-card is-loading" aria-label="Loading Codex limits"></article>
+            <article class="quota-card is-loading" aria-label="Loading OpenCode Go limits"></article>
+          </div>
+
+          <aside class="advice-panel" aria-labelledby="advice-title">
+            <div class="advice-heading">
+              <div>
+                <span class="eyebrow">Plan B</span>
+                <h2 id="advice-title">Best next move</h2>
+              </div>
+              <button class="button" id="advice-button" type="button">Ask for advice</button>
+            </div>
+            <div class="advice-body" id="advice-body" aria-live="polite">
+              <p class="advice-empty">
+                Turn your usage into one specific plan B: what to switch, when,
+                and for which kind of work.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="Usage summary for the selected period">
+        <div class="stat">
+          <span class="stat-label">All tokens</span>
+          <strong class="stat-value" id="figure-tokens">—</strong>
+          <span class="stat-note" id="figure-events">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Fresh tokens</span>
+          <strong class="stat-value" id="figure-fresh">—</strong>
+          <span class="stat-note" id="figure-fresh-note">what drains limits</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Sessions</span>
+          <strong class="stat-value" id="figure-sessions">—</strong>
+          <span class="stat-note" id="figure-sessions-note">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Cache hit rate</span>
+          <strong class="stat-value" id="figure-cache">—</strong>
+          <span class="stat-note">cached reads ÷ all input</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">API-equivalent value</span>
+          <strong class="stat-value" id="figure-cost">—</strong>
+          <span class="stat-note" id="figure-cost-note">list-price estimate</span>
+        </div>
+      </section>
+
+      <!-- ============ USAGE ============ -->
+      <section class="section" id="usage" aria-labelledby="usage-title">
+        <article class="panel hero-panel">
+          <header class="hero-head">
+            <div>
+              <h2 id="usage-title">Usage over time</h2>
+              <p class="panel-sub" id="usage-summary">—</p>
+            </div>
+            <div class="hero-controls">
+              <span class="segmented small" role="group" aria-label="Group by">
+                <button type="button" data-group="provider">By subscription</button>
+                <button type="button" data-group="model">By model</button>
+              </span>
+              <span class="segmented small" role="group" aria-label="Resolution" id="resolution-switch"></span>
+            </div>
+          </header>
+          <div class="hero-legend" id="usage-legend" role="group" aria-label="Series; click to show or hide"></div>
+          <div class="chart-wrap hero-chart" id="usage-chart">
+            <div class="chart-empty">Waiting for local logs…</div>
+          </div>
+          <footer class="hero-foot">
+            <span class="hint" id="zoom-hint">Drag across the chart to zoom in. Click a legend item to hide it.</span>
+            <span class="limit-key"><i></i>Limit hit</span>
+            <button class="button small" id="zoom-reset" type="button" hidden>Reset zoom</button>
+          </footer>
+        </article>
+      </section>
+
+      <!-- ============ MODELS ============ -->
+      <section class="section" id="models" aria-labelledby="models-title">
+        <div class="section-head">
+          <h2 id="models-title">Models</h2>
+          <p id="models-sub">Which models did the work, and how efficiently.</p>
+        </div>
+        <div class="grid">
+          <article class="panel span-4">
+            <header class="panel-heading">
+              <div>
+                <h3>Model mix</h3>
+                <p class="panel-sub" id="mix-sub">Share of tokens</p>
+              </div>
+            </header>
+            <div id="model-mix" class="rank-list">
+              <div class="chart-empty">Waiting for local logs…</div>
+            </div>
+          </article>
+
+          <article class="panel span-8">
+            <header class="panel-heading">
+              <div>
+                <h3>Token makeup</h3>
+                <p class="panel-sub">Fresh = input, output and cache writes. Cache reads are cheap and mostly don't count against you.</p>
+              </div>
+            </header>
+            <div class="table-scroll">
+              <table class="model-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col" class="num">All tokens</th>
+                    <th scope="col" class="num">Fresh</th>
+                    <th scope="col" class="num">Output</th>
+                    <th scope="col" class="hit-col">Cache hit</th>
+                    <th scope="col" class="num">Calls</th>
+                    <th scope="col" class="num">API $</th>
+                  </tr>
+                </thead>
+                <tbody id="model-rows"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============ HABITS ============ -->
+      <section class="section" id="habits" aria-labelledby="habits-title">
+        <div class="section-head">
+          <h2 id="habits-title">Habits</h2>
+          <p>When you work, where, and for how long.</p>
+        </div>
+        <div class="grid">
+          <article class="panel span-8">
+            <header class="panel-heading">
+              <div>
+                <h3>Weekly rhythm</h3>
+                <p class="panel-sub" id="heat-sub">Day × hour</p>
+              </div>
+              <div class="heat-scale" id="heat-scale"></div>
+            </header>
+            <div id="heatmap" class="heatmap">
+              <div class="chart-empty">Waiting for local logs…</div>
+            </div>
+          </article>
+
+          <article class="panel span-4">
+            <header class="panel-heading">
+              <div>
+                <h3>Session lengths</h3>
+                <p class="panel-sub">How long you stay in one session</p>
+              </div>
+            </header>
+            <div id="session-bars" class="bar-list">
+              <div class="chart-empty">Waiting for local logs…</div>
+            </div>
+          </article>
+
+          <article class="panel span-6">
+            <header class="panel-heading">
+              <div>
+                <h3>Projects</h3>
+                <p class="panel-sub" id="project-sub">Where the work went</p>
+              </div>
+            </header>
+            <div id="project-bars" class="bar-list">
+              <div class="chart-empty">Waiting for local logs…</div>
+            </div>
+          </article>
+
+          <article class="panel span-6">
+            <header class="panel-heading">
+              <div>
+                <h3>Limit timeline</h3>
+                <p class="panel-sub" id="limit-count">Logged limit hits</p>
+              </div>
+            </header>
+            <ol class="limit-list" id="limit-list"></ol>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Reads Claude Code and Codex session files and OpenCode's local database
+        in place. Go limits come from OpenCode's usage API. Nothing is proxied.
+      </p>
+      <p id="footer-meta"></p>
+    </footer>
+
+    <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+    <div class="toast" id="toast" role="alert" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,216 @@
+#!/usr/bin/env bun
+import { chmod, mkdir, readFile, rm, symlink, writeFile, lstat } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
+import { loadConfig, paths } from "../src/config";
+
+const REPO = resolve(import.meta.dir, "..");
+const LABEL = `com.${userInfo().username.replace(/[^a-zA-Z0-9.-]/g, "")}.usage-dash`;
+const PLIST = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+const LOG_DIR = join(homedir(), "Library", "Logs");
+const CLI_LINK = join(homedir(), ".local", "bin", "usage-dash");
+const BUN = Bun.which("bun") ?? process.execPath;
+
+function xml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+async function plistContents(port: number): Promise<string> {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xml(LABEL)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xml(BUN)}</string>
+    <string>${xml(join(REPO, "src", "server.ts"))}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${xml(REPO)}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>${xml(join(LOG_DIR, "usage-dash.log"))}</string>
+  <key>StandardErrorPath</key>
+  <string>${xml(join(LOG_DIR, "usage-dash.error.log"))}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${xml("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")}</string>
+  </dict>
+</dict>
+</plist>
+`;
+}
+
+function launchctl(args: string[]): { code: number; out: string; err: string } {
+  const result = Bun.spawnSync(["launchctl", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return {
+    code: result.exitCode ?? 1,
+    out: result.stdout?.toString() ?? "",
+    err: result.stderr?.toString() ?? "",
+  };
+}
+
+function loaded(): boolean {
+  return launchctl(["print", `gui/${userInfo().uid}/${LABEL}`]).code === 0;
+}
+
+async function health(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function install(): Promise<void> {
+  const config = await loadConfig();
+  const p = paths();
+  await mkdir(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
+  await mkdir(LOG_DIR, { recursive: true });
+  await mkdir(join(homedir(), ".local", "bin"), { recursive: true });
+  await writeFile(PLIST, await plistContents(config.port), { mode: 0o644 });
+  try {
+    const existing = await lstat(CLI_LINK);
+    if (!existing.isSymbolicLink()) {
+      throw new Error(`${CLI_LINK} exists and is not a symlink; leaving it alone`);
+    }
+    await rm(CLI_LINK);
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  await symlink(join(REPO, "bin", "usage-dash"), CLI_LINK);
+  await chmod(join(REPO, "bin", "usage-dash"), 0o755);
+  await chmod(p.configFile, 0o600).catch(() => {});
+  if (loaded()) launchctl(["bootout", `gui/${userInfo().uid}`, PLIST]);
+  const boot = launchctl(["bootstrap", `gui/${userInfo().uid}`, PLIST]);
+  if (boot.code !== 0) {
+    throw new Error(boot.err || boot.out || "launchctl bootstrap failed");
+  }
+  launchctl(["enable", `gui/${userInfo().uid}/${LABEL}`]);
+  await waitForHealth(config.port, 12_000);
+  console.log(`Installed and started ${LABEL}`);
+  console.log(`Dashboard: http://127.0.0.1:${config.port}`);
+  console.log(`Command:   ~/.local/bin/usage-dash`);
+  console.log(`Logs:      ${join(LOG_DIR, "usage-dash.log")}`);
+}
+
+async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await health(port)) return true;
+    await Bun.sleep(350);
+  }
+  return false;
+}
+
+async function start(): Promise<void> {
+  const config = await loadConfig();
+  try {
+    await readFile(PLIST);
+  } catch {
+    throw new Error("Service is not installed. Run: usage-dash install");
+  }
+  const p = `gui/${userInfo().uid}`;
+  if (!loaded()) {
+    const result = launchctl(["bootstrap", p, PLIST]);
+    if (result.code !== 0) {
+      throw new Error(result.err || result.out || "Could not start the service");
+    }
+  }
+  const ok = await waitForHealth(config.port, 10_000);
+  console.log(
+    ok
+      ? `usage-dash is running at http://127.0.0.1:${config.port}`
+      : "Started, but the health check has not answered yet. Try: usage-dash status",
+  );
+}
+
+async function stop(): Promise<void> {
+  if (!loaded()) {
+    console.log("usage-dash is already stopped");
+    return;
+  }
+  const result = launchctl(["bootout", `gui/${userInfo().uid}`, PLIST]);
+  if (result.code !== 0) {
+    throw new Error(result.err || result.out || "Could not stop the service");
+  }
+  console.log("usage-dash stopped");
+}
+
+async function status(): Promise<void> {
+  const config = await loadConfig();
+  const isLoaded = loaded();
+  const isUp = await health(config.port);
+  console.log(`service: ${isLoaded ? "loaded" : "stopped"}`);
+  console.log(`http:    ${isUp ? `up at http://127.0.0.1:${config.port}` : "not responding"}`);
+  console.log(`plist:   ${PLIST}`);
+  if (!isUp && isLoaded) {
+    console.log(`logs:    ${join(LOG_DIR, "usage-dash.error.log")}`);
+  }
+}
+
+async function open(): Promise<void> {
+  const config = await loadConfig();
+  if (!(await health(config.port))) await start();
+  Bun.spawnSync(["open", `http://127.0.0.1:${config.port}`]);
+}
+
+async function uninstall(): Promise<void> {
+  const config = await loadConfig();
+  if (loaded()) launchctl(["bootout", `gui/${userInfo().uid}`, PLIST]);
+  await rm(PLIST, { force: true });
+  try {
+    const link = await lstat(CLI_LINK);
+    if (link.isSymbolicLink()) await rm(CLI_LINK);
+  } catch {}
+  console.log("Removed the LaunchAgent and command link. Your usage database was kept.");
+  console.log(`Data: ${paths().dataDir}`);
+  console.log(`Open: http://127.0.0.1:${config.port} (only while the server runs)`);
+}
+
+const command = process.argv[2] ?? "status";
+try {
+  if (command === "install") await install();
+  else if (command === "start") await start();
+  else if (command === "stop") await stop();
+  else if (command === "status") await status();
+  else if (command === "open") await open();
+  else if (command === "uninstall") await uninstall();
+  else if (command === "help" || command === "--help" || command === "-h") {
+    console.log(`usage-dash
+
+Commands:
+  install    Install the login LaunchAgent and command link, then start
+  start      Start the background service
+  stop       Stop the background service
+  status     Show service and HTTP status
+  open       Open the dashboard, starting the service if needed
+  uninstall  Stop and remove the LaunchAgent; keep usage data
+
+Repo: ${REPO}`);
+  } else {
+    console.error(`Unknown command: ${command}. Try: usage-dash help`);
+    process.exitCode = 1;
+  }
+} catch (error: any) {
+  console.error(String(error?.message ?? error));
+  process.exitCode = 1;
+}
